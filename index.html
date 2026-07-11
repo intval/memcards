@@ -100,6 +100,21 @@
   }
   .answer .word { font-size: clamp(22px, 6.5vw, 32px); font-weight: 600; color: #cfe0ff; }
 
+  /* example phrase shown with the card ("Einwand erheben") */
+  .example {
+    margin-top: 16px;
+    font-size: clamp(16px, 4.5vw, 21px);
+    color: var(--muted);
+    font-style: italic;
+  }
+  .answer .example-answer {
+    margin-top: 8px;
+    font-size: clamp(15px, 4vw, 19px);
+    color: #9db8e6;
+    font-style: italic;
+    font-weight: 400;
+  }
+
   .controls { width: 100%; display: flex; gap: 12px; }
   .controls .btn { flex: 1; padding: 16px; font-size: 17px; }
 
@@ -273,34 +288,103 @@ function uniq(arr) {
   return [...new Set(arr)];
 }
 
-/* ============================================================
-   Storage
-   ============================================================ */
-function load() {
-  try {
-    const raw = localStorage.getItem(STORE_KEY);
-    if (!raw) return { cards: [] };
-    const data = JSON.parse(raw);
-    if (!Array.isArray(data.cards)) data.cards = [];
-    return data;
-  } catch {
-    return { cards: [] };
+// From the full list of lookup pairs, keep the multi-word *usage phrases* for a
+// word (e.g. for "Einwand": "Einwand erheben", "einen Einwand vorbringen") and
+// drop the bare-headword rows ("Einwand" = "objection/demur/dissent"). Those
+// bare rows are exactly the "1-to-1 same word" ones we don't want as examples.
+// A row is kept when its German side is a phrase (has a space) that still
+// mentions the word, or its English side does — keeping it relevant to the card.
+function deriveExamples(pairs, baseDe, baseEn) {
+  const bd = (baseDe || "").toLowerCase();
+  const be = (baseEn || "").toLowerCase();
+  const out = [], seen = new Set();
+  for (const p of pairs) {
+    const de = stripMarkers(p.de || ""), en = stripMarkers(p.en || "");
+    if (!de || !en) continue;
+    const del = de.toLowerCase(), enl = en.toLowerCase();
+    if (!/\s/.test(de) || del === bd) continue;        // must be a phrase, not the headword
+    if (bd && !del.includes(bd) && be && !enl.includes(be)) continue; // stay on-topic
+    const key = del + "|" + enl;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ de, en });
   }
-}
-function save() {
-  localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  return out.slice(0, 24);
 }
 
-const state = load();
+/* ============================================================
+   Storage (swappable backend)
+
+   The app persists one JSON blob — the `state` object `{ cards }` — through a
+   backend exposing `read()` / `write(blob)`. Swap `store` to change where cards
+   live without touching app logic. That same blob is what exportData() /
+   importData() move to and from Google Drive later.
+   ============================================================ */
+const localStorageStore = {
+  async read() {
+    const raw = localStorage.getItem(STORE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  },
+  async write(blob) { localStorage.setItem(STORE_KEY, JSON.stringify(blob)); },
+};
+
+// In-browser database — larger quota, more robust than localStorage. Stores the
+// blob under one key. Flip `store` below to make it the active backend.
+const indexedDBStore = (() => {
+  const [DB, STORE, KEY] = ["memcards", "state", "app"];
+  let dbPromise;
+  const open = () => (dbPromise ??= new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  }));
+  const tx = (mode, fn) => open().then(db => new Promise((resolve, reject) => {
+    const t = db.transaction(STORE, mode);
+    const req = fn(t.objectStore(STORE));
+    t.oncomplete = () => resolve(req && req.result);
+    t.onerror = t.onabort = () => reject(t.error);
+  }));
+  return {
+    read: () => tx("readonly", s => s.get(KEY)).then(v => v ?? null),
+    write: blob => tx("readwrite", s => s.put(blob, KEY)),
+  };
+})();
+
+const store = localStorageStore;   // ← swap to indexedDBStore to move storage
+
+const normalize = blob => ({ cards: Array.isArray(blob?.cards) ? blob.cards : [] });
+
+// In-memory state; populated from `store` during boot (see bottom of file).
+let state = { cards: [] };
+
+// Persist current state. Fire-and-forget from call sites — the UI stays
+// responsive and we surface any failure via a toast.
+function save() {
+  store.write(state).catch(err => toast(`Save failed: ${err.message}`, "err"));
+}
+
+// Google Drive sync seam (added later): exportData() yields the blob to upload;
+// importData() replaces local data from a downloaded blob.
+function exportData() { return state; }
+async function importData(blob) {
+  state = normalize(blob);
+  await store.write(state);
+  pickCurrent();
+  render();
+}
 
 /* ============================================================
    SM-2
    quality: 5 = pass (Next without revealing), 2 = lapse (revealed)
    ============================================================ */
-function newCard(de, en) {
+function newCard(de, en, examples) {
+  const list = Array.isArray(examples) ? examples : [];
   return {
     id: cardId(de, en),
     de, en,
+    examples: list,           // [{ de, en }] usage phrases (may be empty)
+    examplesFetched: true,    // false only for pre-examples cards (backfilled lazily)
     ef: 2.5,
     interval: 0,
     repetitions: 0,
@@ -338,15 +422,67 @@ function dueCount() {
   return state.cards.filter(c => c.due <= now).length;
 }
 
-let current = null;   // the card object being shown
-let side = "de";      // which side is the prompt: "de" or "en"
-let revealed = false; // has the answer been shown (=> lapse recorded)
+let current = null;        // the card object being shown
+let side = "de";           // which side is the prompt: "de" or "en"
+let revealed = false;      // has the answer been shown (=> lapse recorded)
+let currentExample = null; // example held stable across a single card viewing
+const backfilling = new Set(); // card ids currently being re-looked-up for examples
 
 function pickCurrent() {
   const q = queue();
   current = q[0] || null;
   revealed = false;
   side = Math.random() < 0.5 ? "de" : "en";
+  currentExample = null;   // fresh random example is chosen on next render
+  if (current) maybeBackfill(current);
+}
+
+// Choose a random usage phrase to show with the card. Skips any phrase whose
+// prompt-side is identical to the shown word, so the example always differs
+// from the word itself (the "not 1-to-1 the same word" rule).
+function pickExample(card, promptSide) {
+  const list = card && card.examples;
+  if (!Array.isArray(list) || !list.length) return null;
+  const shown = (promptSide === "de" ? card.de : card.en).toLowerCase().trim();
+  const usable = list.filter((e) => {
+    const p = (promptSide === "de" ? e.de : e.en || "").toLowerCase().trim();
+    const a = (promptSide === "de" ? e.en : e.de || "").trim();
+    return p && a && p !== shown;
+  });
+  if (!usable.length) return null;
+  const e = usable[Math.floor(Math.random() * usable.length)];
+  return promptSide === "de"
+    ? { prompt: e.de, answer: e.en }
+    : { prompt: e.en, answer: e.de };
+}
+
+// Bare German headword for a card ("der Einwand" -> "Einwand"), used to look the
+// word up again and to match its phrases.
+function baseGerman(card) {
+  return stripMarkers(card.de).replace(/^(der|die|das)\s+/i, "").trim();
+}
+
+// Older cards (created before examples existed) fetch their phrases once, the
+// first time they surface, then cache them on the card.
+async function maybeBackfill(card) {
+  if (!card || card.examplesFetched || backfilling.has(card.id)) return;
+  const baseDe = baseGerman(card);
+  const baseEn = stripMarkers(card.en);
+  const word = baseDe || baseEn;
+  if (!word) { card.examplesFetched = true; save(); return; }
+  backfilling.add(card.id);
+  try {
+    const { pairs } = await backend.lookup(word);
+    const examples = deriveExamples(pairs, baseDe, baseEn);
+    const c = state.cards.find((x) => x.id === card.id);
+    if (c) { c.examples = examples; c.examplesFetched = true; save(); }
+    if (current && current.id === card.id) { currentExample = null; render(); }
+  } catch {
+    // Proxy down / lookup failed — leave unfetched so it retries when the card
+    // next appears. No toast: backfill is a silent background nicety.
+  } finally {
+    backfilling.delete(card.id);
+  }
 }
 
 /* ============================================================
@@ -369,12 +505,19 @@ function render() {
   const promptWord = side === "de" ? current.de : current.en;
   const answerWord = side === "de" ? current.en : current.de;
 
+  // Pick the example once per viewing; keep it stable across the reveal so the
+  // phrase and its translation line up.
+  if (currentExample === null) currentExample = pickExample(current, side);
+  const ex = currentExample;
+
   main.innerHTML = `
     <div class="card" id="card">
       <div class="prompt">${esc(promptWord)}</div>
+      ${ex ? `<div class="example">${esc(ex.prompt)}</div>` : ``}
       ${revealed ? `
         <div class="answer">
           <div class="word">${esc(answerWord)}</div>
+          ${ex ? `<div class="example-answer">${esc(ex.answer)}</div>` : ``}
         </div>
       ` : ``}
     </div>
@@ -438,11 +581,11 @@ async function runAdd(word) {
     const best = clean.length ? bestPair(clean, word) : null;
 
     if (best && best.score >= 3) {          // confident exact-word match
-      commitCard(best.pair);
+      commitCard(best.pair, pairs);
     } else if (suggestions.length) {        // misspelled? let the user choose
       showChooser(word, suggestions);
     } else if (best) {                      // translations but no exact match
-      commitCard(best.pair);
+      commitCard(best.pair, pairs);
     } else {
       toast(`No translation or suggestions for “${word}”.`, "err");
     }
@@ -459,14 +602,22 @@ function setAdding(on) {
 }
 
 // Store a chosen pair as a card. German side always carries its article.
-function commitCard(pair) {
+// `allPairs` is the full lookup result, from which we mine usage phrases.
+function commitCard(pair, allPairs) {
   const de = withArticle(pair.de);
   const en = stripMarkers(pair.en);
+  const examples = deriveExamples(allPairs || [pair], stripMarkers(pair.de), en);
   const id = cardId(de, en);
-  if (state.cards.some(c => c.id === id)) {
+  const existing = state.cards.find(c => c.id === id);
+  if (existing) {
+    if (!existing.examplesFetched || !(existing.examples || []).length) {
+      existing.examples = examples;       // top up an older/empty card
+      existing.examplesFetched = true;
+      save();
+    }
     toast(`Already have “${de}”.`);
   } else {
-    state.cards.push(newCard(de, en));
+    state.cards.push(newCard(de, en, examples));
     save();
     toast(`Added “${de} — ${en}”.`, "ok");
   }
@@ -565,8 +716,15 @@ function toast(msg, kind) {
 /* ============================================================
    Boot
    ============================================================ */
-pickCurrent();
-render();
+(async function boot() {
+  try {
+    state = normalize(await store.read());
+  } catch (err) {
+    toast(`Could not load saved cards: ${err.message}`, "err");
+  }
+  pickCurrent();
+  render();
+})();
 </script>
 </body>
 </html>
