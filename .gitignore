@@ -1,0 +1,14 @@
+# local tooling / editor
+.claude/
+.vscode/
+.idea/
+
+# node / wrangler
+node_modules/
+.wrangler/
+.dev.vars
+*.log
+
+# os
+.DS_Store
+Thumbs.db

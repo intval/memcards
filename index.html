@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+<meta name="theme-color" content="#1f6feb" />
+<title>Karten · German Flashcards</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --card: #1e222b;
+    --card-hi: #262b36;
+    --text: #e8eaed;
+    --muted: #9aa4b2;
+    --accent: #3b82f6;
+    --accent-press: #2563eb;
+    --danger: #ef4444;
+    --ok: #22c55e;
+    --radius: 18px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: 1px solid #23272f;
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 5;
+  }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+  header h1 span { color: var(--muted); font-weight: 400; }
+  .btn {
+    appearance: none;
+    border: 0;
+    border-radius: 12px;
+    background: var(--accent);
+    color: white;
+    font-size: 15px;
+    font-weight: 600;
+    padding: 10px 14px;
+    cursor: pointer;
+    transition: background .12s, transform .06s;
+  }
+  .btn:active { background: var(--accent-press); transform: translateY(1px); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.secondary { background: #2a2f3a; }
+  .btn.secondary:active { background: #333a47; }
+
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    padding: 20px 16px 28px;
+    width: 100%;
+    max-width: 520px;
+    margin: 0 auto;
+  }
+
+  .card {
+    width: 100%;
+    min-height: 46vh;
+    background: linear-gradient(180deg, var(--card-hi), var(--card));
+    border: 1px solid #2c313c;
+    border-radius: var(--radius);
+    box-shadow: 0 10px 30px rgba(0,0,0,.35);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 28px 22px;
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    transition: transform .06s;
+  }
+  .card:active { transform: scale(.995); }
+  .lang-tag {
+    position: absolute;
+    top: 14px;
+    left: 16px;
+    font-size: 12px;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .prompt { font-size: clamp(26px, 8vw, 40px); font-weight: 700; }
+  .answer {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px dashed #39404c;
+    width: 100%;
+  }
+  .answer .word { font-size: clamp(22px, 6.5vw, 32px); font-weight: 600; color: #cfe0ff; }
+  .answer .answer-lang { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .hint { margin-top: 22px; font-size: 13px; color: var(--muted); }
+  .lapse-note { color: var(--danger); font-size: 12px; margin-top: 10px; }
+
+  .controls { width: 100%; display: flex; gap: 12px; }
+  .controls .btn { flex: 1; padding: 16px; font-size: 17px; }
+
+  .empty { text-align: center; color: var(--muted); padding: 30px 10px; }
+  .empty .big { font-size: 42px; margin-bottom: 8px; }
+
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+    padding: 10px 16px calc(14px + env(safe-area-inset-bottom));
+  }
+
+  /* toast / status */
+  #toast {
+    position: fixed;
+    left: 50%;
+    bottom: calc(84px + env(safe-area-inset-bottom));
+    transform: translateX(-50%) translateY(20px);
+    background: #0b0d11;
+    border: 1px solid #2c313c;
+    color: var(--text);
+    padding: 10px 16px;
+    border-radius: 12px;
+    font-size: 14px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s, transform .2s;
+    max-width: 90vw;
+    z-index: 20;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.err { border-color: var(--danger); }
+  #toast.ok { border-color: var(--ok); }
+
+  /* chooser modal */
+  .modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.55);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    z-index: 30;
+    padding: 0 12px calc(16px + env(safe-area-inset-bottom));
+  }
+  .modal[hidden] { display: none; }
+  .sheet {
+    width: 100%;
+    max-width: 520px;
+    background: var(--panel);
+    border: 1px solid #2c313c;
+    border-radius: 18px 18px 14px 14px;
+    padding: 18px 16px 14px;
+    box-shadow: 0 -8px 40px rgba(0,0,0,.5);
+    animation: rise .16s ease-out;
+  }
+  @keyframes rise { from { transform: translateY(24px); opacity: .4; } to { transform: none; opacity: 1; } }
+  .sheet-title { font-size: 17px; font-weight: 700; }
+  .sheet-sub { color: var(--muted); font-size: 14px; margin: 2px 0 12px; }
+  .sheet-list { display: flex; flex-direction: column; gap: 8px; max-height: 46vh; overflow-y: auto; }
+  .sheet-list .btn { text-align: left; }
+  .btn.ghost { background: transparent; color: var(--muted); margin-top: 12px; width: 100%; }
+  .btn.ghost:active { background: #22262f; }
+
+  .spinner {
+    width: 18px; height: 18px;
+    border: 2px solid rgba(255,255,255,.35);
+    border-top-color: white;
+    border-radius: 50%;
+    display: inline-block;
+    vertical-align: -3px;
+    margin-right: 8px;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Karten <span>· Deutsch</span></h1>
+    <button class="btn" id="addBtn">＋ Add word</button>
+  </header>
+
+  <main id="main"><!-- card rendered here --></main>
+
+  <footer id="footer"></footer>
+  <div id="toast"></div>
+  <div id="chooser" class="modal" hidden></div>
+
+<script>
+/* ============================================================
+   Config
+   ============================================================ */
+// Generic CORS proxy (the Cloudflare Worker). Local dev: http://127.0.0.1:8787
+const PROXY_URL = "https://cors-proxy.alex1165.workers.dev";
+
+const STORE_KEY = "memcards.v1";
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Wrap any URL so it goes through the CORS proxy.
+function proxied(url) {
+  return `${PROXY_URL}/?url=${encodeURIComponent(url)}`;
+}
+
+/* ============================================================
+   Dictionary backend (swappable)
+   The app talks to `backend.lookup(word)` only. To switch away from dict.cc,
+   replace this adapter with one that returns the same shape:
+     { pairs: [{ de, en }], suggestions: [word, ...] }
+   `de` may carry a gender marker like "Hund {m}" (used to add the article).
+   ============================================================ */
+const dictccBackend = {
+  async lookup(word) {
+    const term = encodeURIComponent(word);
+    // We don't know the source language, so look up both directions.
+    const [deen, ende] = await Promise.all([
+      fetchDoc(proxied(`https://deen.dict.cc/?s=${term}`)),
+      fetchDoc(proxied(`https://ende.dict.cc/?s=${term}`)),
+    ]);
+    const pairs = [...parsePairs(deen), ...parsePairs(ende)];
+    const suggestions = uniq([
+      ...parseSuggestions(deen),
+      ...parseSuggestions(ende),
+    ]).filter((s) => s.toLowerCase() !== word.toLowerCase());
+    return { pairs, suggestions };
+  },
+};
+const backend = dictccBackend;
+
+async function fetchDoc(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const html = await res.text();
+  return new DOMParser().parseFromString(html, "text/html");
+}
+
+// Translation rows live in `td.td7nl` cells; they alternate English / German.
+function parsePairs(doc) {
+  const cells = [...doc.querySelectorAll("td.td7nl")].map(cellText);
+  const en = [], de = [];
+  cells.forEach((t, i) => (i % 2 === 0 ? en : de).push(t));
+  const pairs = [];
+  for (let i = 0; i < Math.min(en.length, de.length); i++) {
+    if (en[i] && de[i]) pairs.push({ de: de[i], en: en[i] });
+  }
+  return pairs;
+}
+
+// Cleaned cell text: drop subject tags (<dfn>) and frequency (<div>), and
+// [optional notes]; keep {gender} markers.
+function cellText(td) {
+  const clone = td.cloneNode(true);
+  clone.querySelectorAll("dfn, div").forEach((e) => e.remove());
+  return clone.textContent.replace(/\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim();
+}
+
+// When a word isn't found, dict.cc lists "Ähnliche Begriffe" / "Similar terms".
+function parseSuggestions(doc) {
+  const head = [...doc.querySelectorAll("div.hl3")].find((h) =>
+    /ähnliche begriffe|similar terms/i.test(h.textContent)
+  );
+  const td = head && head.closest("td");
+  if (!td) return [];
+  return [...td.querySelectorAll('a[href*="?s="]')]
+    .map((a) => a.textContent.trim())
+    .filter(Boolean);
+}
+
+function uniq(arr) {
+  return [...new Set(arr)];
+}
+
+/* ============================================================
+   Storage
+   ============================================================ */
+function load() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return { cards: [] };
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data.cards)) data.cards = [];
+    return data;
+  } catch {
+    return { cards: [] };
+  }
+}
+function save() {
+  localStorage.setItem(STORE_KEY, JSON.stringify(state));
+}
+
+const state = load();
+
+/* ============================================================
+   SM-2
+   quality: 5 = pass (Next without revealing), 2 = lapse (revealed)
+   ============================================================ */
+function newCard(de, en) {
+  return {
+    id: cardId(de, en),
+    de, en,
+    ef: 2.5,
+    interval: 0,
+    repetitions: 0,
+    due: Date.now(),          // new cards are due immediately
+    createdAt: Date.now(),
+  };
+}
+function cardId(de, en) {
+  return (de + "|" + en).toLowerCase().replace(/\s+/g, " ").trim();
+}
+function grade(card, quality) {
+  if (quality >= 3) {
+    if (card.repetitions === 0) card.interval = 1;
+    else if (card.repetitions === 1) card.interval = 6;
+    else card.interval = Math.round(card.interval * card.ef);
+    card.repetitions += 1;
+  } else {
+    card.repetitions = 0;
+    card.interval = 1;
+  }
+  card.ef = card.ef + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02));
+  if (card.ef < 1.3) card.ef = 1.3;
+  card.due = Date.now() + card.interval * DAY_MS;
+}
+
+/* ============================================================
+   Queue / current-card selection
+   ============================================================ */
+function queue() {
+  // due-first, then soonest upcoming; there's always a "current" card.
+  return [...state.cards].sort((a, b) => a.due - b.due);
+}
+function dueCount() {
+  const now = Date.now();
+  return state.cards.filter(c => c.due <= now).length;
+}
+
+let current = null;   // the card object being shown
+let side = "de";      // which side is the prompt: "de" or "en"
+let revealed = false; // has the answer been shown (=> lapse recorded)
+
+function pickCurrent() {
+  const q = queue();
+  current = q[0] || null;
+  revealed = false;
+  side = Math.random() < 0.5 ? "de" : "en";
+}
+
+/* ============================================================
+   Rendering
+   ============================================================ */
+const main = document.getElementById("main");
+const footer = document.getElementById("footer");
+
+function render() {
+  if (!current) {
+    main.innerHTML = `
+      <div class="empty">
+        <div class="big">🗂️</div>
+        <p>No cards yet.<br>Tap <b>＋ Add word</b> to look up a German or English word.</p>
+      </div>`;
+    footer.textContent = "0 cards";
+    return;
+  }
+
+  const promptWord = side === "de" ? current.de : current.en;
+  const answerWord = side === "de" ? current.en : current.de;
+  const promptLang = side === "de" ? "Deutsch" : "English";
+  const answerLang = side === "de" ? "English" : "Deutsch";
+
+  main.innerHTML = `
+    <div class="card" id="card">
+      <div class="lang-tag">${promptLang}</div>
+      <div class="prompt">${esc(promptWord)}</div>
+      ${revealed ? `
+        <div class="answer">
+          <div class="answer-lang">${answerLang}</div>
+          <div class="word">${esc(answerWord)}</div>
+        </div>
+        <div class="lapse-note">Revealed · marked as “needs review”</div>
+      ` : `
+        <div class="hint">Tap the card if you don’t know it</div>
+      `}
+    </div>
+    <div class="controls">
+      <button class="btn" id="nextBtn">Next ›</button>
+    </div>`;
+
+  document.getElementById("card").addEventListener("click", onReveal);
+  document.getElementById("nextBtn").addEventListener("click", onNext);
+
+  const total = state.cards.length;
+  footer.textContent = `${total} card${total === 1 ? "" : "s"} · ${dueCount()} due`;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+/* ============================================================
+   Interactions
+   ============================================================ */
+function onReveal() {
+  if (revealed || !current) return;
+  revealed = true;
+  grade(current, 2);   // revealing = lapse
+  save();
+  render();
+}
+
+function onNext() {
+  if (current && !revealed) {
+    grade(current, 5);  // knew it => pass
+    save();
+  }
+  // if revealed, grade was already applied on reveal
+  pickCurrent();
+  render();
+}
+
+/* ============================================================
+   Add word  ->  backend lookup (both directions) -> card
+   ============================================================ */
+const addBtn = document.getElementById("addBtn");
+addBtn.addEventListener("click", promptAndAdd);
+
+function promptAndAdd() {
+  const input = prompt("Add a word (German or English):");
+  if (input && input.trim()) runAdd(input.trim());
+}
+
+async function runAdd(word) {
+  setAdding(true);
+  try {
+    const { pairs, suggestions } = await backend.lookup(word);
+    const clean = pairs
+      .map(p => ({ de: (p.de || "").trim(), en: (p.en || "").trim() }))
+      .filter(p => p.de && p.en);
+
+    const best = clean.length ? bestPair(clean, word) : null;
+
+    if (best && best.score >= 3) {          // confident exact-word match
+      commitCard(best.pair);
+    } else if (suggestions.length) {        // misspelled? let the user choose
+      showChooser(word, suggestions);
+    } else if (best) {                      // translations but no exact match
+      commitCard(best.pair);
+    } else {
+      toast(`No translation or suggestions for “${word}”.`, "err");
+    }
+  } catch (err) {
+    toast(`Lookup failed: ${err.message}. Is the proxy running?`, "err");
+  } finally {
+    setAdding(false);
+  }
+}
+
+function setAdding(on) {
+  addBtn.disabled = on;
+  addBtn.innerHTML = on ? `<span class="spinner"></span>Looking up…` : "＋ Add word";
+}
+
+// Store a chosen pair as a card. German side always carries its article.
+function commitCard(pair) {
+  const de = withArticle(pair.de);
+  const en = stripMarkers(pair.en);
+  const id = cardId(de, en);
+  if (state.cards.some(c => c.id === id)) {
+    toast(`Already have “${de}”.`);
+  } else {
+    state.cards.push(newCard(de, en));
+    save();
+    toast(`Added “${de} — ${en}”.`, "ok");
+  }
+  pickCurrent();   // show a card right away (per spec)
+  render();
+}
+
+// Remove {gender}/{pos} annotations and [notes] from a side.
+function stripMarkers(s) {
+  return s.replace(/\s*\{[^}]*\}/g, "").replace(/\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim();
+}
+
+// German nouns always get their definite article: {m}->der {f}/{pl}->die {n}->das.
+// Non-nouns (verbs, adjectives — no gender marker) are returned unchanged.
+function withArticle(germanSide) {
+  const m = germanSide.match(/\{([^}]*)\}/);
+  const noun = stripMarkers(germanSide);
+  if (!m) return noun;
+  const g = m[1].toLowerCase();
+  let art = "";
+  if (g.includes("pl")) art = "die";
+  else if (g.startsWith("m")) art = "der";
+  else if (g.startsWith("f")) art = "die";
+  else if (g.startsWith("n")) art = "das";
+  return art ? `${art} ${noun}` : noun;
+}
+
+// dict.cc ranks {adj}/verb senses above the plain noun, so index 0 is often
+// wrong (e.g. "dog {adj} = Hunde-"). Prefer the pair whose side matches the
+// typed word exactly, allowing only a gender marker like {m}/{n}/{pl}.
+// Returns { pair, score }.
+function bestPair(pairs, word) {
+  const target = word.toLowerCase().trim();
+  let best = pairs[0], bestScore = -1;
+  for (const p of pairs) {
+    const score = Math.max(sideScore(p.de, target), sideScore(p.en, target));
+    if (score > bestScore) { bestScore = score; best = p; } // ties keep the topmost
+  }
+  return { pair: best, score: bestScore };
+}
+
+function sideScore(side, target) {
+  const s = side.toLowerCase().trim();
+  if (s === target) return 3;                     // exact match
+  const marker = s.match(/\{([^}]*)\}\s*$/);      // trailing {..} annotation
+  const base = s.replace(/\s*\{[^}]*\}\s*$/, "").trim();
+  if (base === target) {
+    // gender markers (m/f/n/pl/sg) are still the clean noun; adj/adv/verb aren't
+    return marker && /^(m|f|n|pl|sg)/.test(marker[1]) ? 3 : 1;
+  }
+  const words = base.split(/\s+/);
+  if (words.includes(target)) return 0.5;         // appears as a token
+  return 0;
+}
+
+/* ============================================================
+   Suggestion chooser (shown when a word isn't found)
+   ============================================================ */
+function showChooser(word, suggestions) {
+  const list = suggestions.slice(0, 12);
+  const el = document.getElementById("chooser");
+  el.innerHTML = `
+    <div class="sheet" role="dialog" aria-modal="true">
+      <div class="sheet-title">“${esc(word)}” not found</div>
+      <div class="sheet-sub">Did you mean one of these?</div>
+      <div class="sheet-list">
+        ${list.map(s => `<button class="btn secondary pick" data-word="${esc(s)}">${esc(s)}</button>`).join("")}
+      </div>
+      <button class="btn ghost" id="chooserCancel">Cancel</button>
+    </div>`;
+  el.hidden = false;
+  el.querySelectorAll(".pick").forEach(b =>
+    b.addEventListener("click", () => { hideChooser(); runAdd(b.dataset.word); })
+  );
+  document.getElementById("chooserCancel").addEventListener("click", hideChooser);
+  el.addEventListener("click", e => { if (e.target === el) hideChooser(); });
+}
+function hideChooser() {
+  const el = document.getElementById("chooser");
+  el.hidden = true;
+  el.innerHTML = "";
+}
+
+/* ============================================================
+   Toast
+   ============================================================ */
+let toastTimer = null;
+function toast(msg, kind) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.className = "show" + (kind ? " " + kind : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = ""; }, 3200);
+}
+
+/* ============================================================
+   Boot
+   ============================================================ */
+pickCurrent();
+render();
+</script>
+</body>
+</html>
