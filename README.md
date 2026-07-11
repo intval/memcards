@@ -1,5 +1,8 @@
 # Karten — German Flashcards SPA
 
+**▶ Live app:** https://intval.github.io/memcards/
+**CORS proxy:** https://cors-proxy.alex1165.workers.dev (locked to `dict.cc`)
+
 A mobile-first, single-page German learning app with SM-2 spaced repetition.
 Add a word (German *or* English — the app figures out which); it's looked up on
 **dict.cc** in both directions and a flashcard is scheduled with the classic **SM-2**
