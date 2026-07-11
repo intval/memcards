@@ -8,5 +8,18 @@ compatibility_date = "2024-11-01"
 [vars]
 ALLOWED_HOSTS = "dict.cc"
 
+# Browser origins allowed to call the proxy (comma-separated, exact match).
+# Only these origins get CORS access; other sites' JS is rejected with 403.
+# Add your production GitHub Pages origin plus any dev origins you use.
+ALLOWED_ORIGINS = "https://intval.github.io,http://127.0.0.1:8787,http://localhost:8787"
+
+# Per-IP rate limit: 10 requests per 60s. Caps how much any one client can
+# extract, protecting both your Worker quota and dict.cc upstream.
+[[unsafe.bindings]]
+name = "RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 10, period = 60 }
+
 # Deploy:  npx wrangler deploy
 # Dev:     npx wrangler dev   (serves on http://127.0.0.1:8787)
