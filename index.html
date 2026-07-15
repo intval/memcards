@@ -122,6 +122,29 @@
     font-weight: 400;
   }
 
+  /* other translations + Russian, shown as bullet points under the answer */
+  .answer .alts {
+    list-style: none;
+    margin: 16px 0 0;
+    padding: 12px 0 0;
+    border-top: 1px dashed #39404c;
+    text-align: left;
+    display: inline-block;
+  }
+  .answer .alts li {
+    font-size: clamp(15px, 4vw, 18px);
+    color: var(--muted);
+    padding: 3px 0 3px 16px;
+    position: relative;
+  }
+  .answer .alts li::before {
+    content: "–";
+    position: absolute;
+    left: 0;
+    color: #4b5361;
+  }
+  .answer .alts li.ru { color: #b6a4d8; margin-top: 4px; }
+
   .controls { width: 100%; display: flex; gap: 12px; }
   .controls .btn { flex: 1; padding: 16px; font-size: 17px; }
 
@@ -187,6 +210,22 @@
   .btn.ghost { background: transparent; color: var(--muted); margin-top: 12px; width: 100%; }
   .btn.ghost:active { background: #22262f; }
 
+  /* translation chooser table */
+  .tt-wrap { max-height: 52vh; overflow-y: auto; margin: 2px 0; border: 1px solid #2c313c; border-radius: 12px; -webkit-overflow-scrolling: touch; }
+  .tt { width: 100%; border-collapse: collapse; }
+  .tt tr { cursor: pointer; }
+  .tt tr:not(:last-child) td { border-bottom: 1px solid #262b34; }
+  .tt tr:active td { background: #22262f; }
+  .tt td { padding: 11px 12px; font-size: 15px; }
+  .tt .src { color: var(--muted); white-space: nowrap; }
+  .tt .arrow { color: #4b5361; width: 1px; padding: 11px 2px; }
+  .tt .trg { font-weight: 600; width: 99%; }
+  .lang-badge {
+    display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .04em;
+    padding: 1px 5px; margin-right: 7px; border-radius: 5px;
+    background: #2c313c; color: var(--muted); vertical-align: 1px;
+  }
+
   .spinner {
     width: 18px; height: 18px;
     border: 2px solid rgba(255,255,255,.35);
@@ -237,16 +276,13 @@ function proxied(url) {
 const dictccBackend = {
   async lookup(word) {
     const term = encodeURIComponent(word);
-    // We don't know the source language, so look up both directions.
-    const [deen, ende] = await Promise.all([
-      fetchDoc(proxied(`https://deen.dict.cc/?s=${term}`)),
-      fetchDoc(proxied(`https://ende.dict.cc/?s=${term}`)),
-    ]);
-    const pairs = [...parsePairs(deen), ...parsePairs(ende)];
-    const suggestions = uniq([
-      ...parseSuggestions(deen),
-      ...parseSuggestions(ende),
-    ]).filter((s) => s.toLowerCase() !== word.toLowerCase());
+    // A single dict.cc query already returns BOTH directions — rows where the
+    // German side is the headword and rows where the English side is — so one
+    // fetch is enough (e.g. "bar" returns German bar→cash and English bar→Balken).
+    const doc = await fetchDoc(proxied(`https://deen.dict.cc/?s=${term}`));
+    const pairs = parsePairs(doc);
+    const suggestions = uniq(parseSuggestions(doc))
+      .filter((s) => s.toLowerCase() !== word.toLowerCase());
     return { pairs, suggestions };
   },
 };
@@ -275,7 +311,11 @@ function parsePairs(doc) {
 // [optional notes]; keep {gender} markers.
 function cellText(td) {
   const clone = td.cloneNode(true);
-  clone.querySelectorAll("dfn, div").forEach((e) => e.remove());
+  // <dfn> subject tags, <div> frequency bars, <sup> homograph indices.
+  clone.querySelectorAll("dfn, div, sup").forEach((e) => e.remove());
+  // dict.cc also marks homographs with a superscript number (Bar²) as a <span>
+  // offset with top:-…px — drop those so "Bar2" collapses to "Bar".
+  clone.querySelectorAll("span[style*='top:-']").forEach((e) => e.remove());
   return clone.textContent.replace(/\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim();
 }
 
@@ -318,6 +358,69 @@ function deriveExamples(pairs, baseDe, baseEn) {
   }
   return out.slice(0, 24);
 }
+
+/* ============================================================
+   Other-translations & Russian extraction
+   ============================================================ */
+
+// From dict.cc deen pairs, collect the single-word translations of `headword`
+// found on `fromSide` ("en" or "de"), returning the opposite side's word.
+// German results keep their {gender} marker so withArticle() can add the article
+// at render time; English results are returned as plain words. Includes the main
+// sense too — the renderer drops whatever matches the card's own answer word.
+function altWords(pairs, headword, fromSide) {
+  const q = matchKey(headword);
+  const out = [], seen = new Set();
+  for (const p of pairs) {
+    const from = fromSide === "en" ? p.en : p.de;
+    const to   = fromSide === "en" ? p.de : p.en;
+    if (!from || !to) continue;
+    if (matchKey(from) !== q) continue;      // row's source side must be the headword
+    if (!isSingleWord(to)) continue;         // one-word translations only
+    const clean = matchKey(to);
+    if (!clean || seen.has(clean)) continue;
+    seen.add(clean);
+    out.push(fromSide === "en" ? deHyphen(to.trim()) : stripMarkers(to));
+  }
+  return out;
+}
+
+// Look a word up in a Russian dict.cc dictionary (deru = German→Russian,
+// enru = English→Russian) and return the Russian translations. On those pages
+// the Russian word sits in the LEFT/even cell and the source word in the RIGHT/
+// odd cell (mirror of deen). We keep only rows whose source side is exactly the
+// headword (not a phrase/idiom or a "Balken-" combining form).
+async function lookupRussian(subdomain, srcWord) {
+  const doc = await fetchDoc(proxied(`https://${subdomain}.dict.cc/?s=${encodeURIComponent(srcWord)}`));
+  const cells = [...doc.querySelectorAll("td.td7nl")].map(cellText);
+  const q = matchKey(srcWord);
+  const out = [], seen = new Set();
+  for (let i = 0; i + 1 < cells.length; i += 2) {
+    const ru = cells[i], src = cells[i + 1];        // even = Russian, odd = source
+    if (!ru || !src) continue;
+    if (matchKey(src) !== q) continue;               // exact headword only…
+    if (/-\s*$/.test(stripMarkers(src))) continue;   // …not a combining form ("Balken-")
+    const w = stripMarkers(ru);
+    if (!w || !/[а-яё]/i.test(w)) continue;          // must actually be Cyrillic
+    const key = w.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(w);
+  }
+  return out;
+}
+
+// Russian for a card, honoring the source language it was added from
+// ("EN" → enru, "DE" → deru). For older cards with no recorded source, try
+// German→Russian first and fall back to English→Russian ("whichever has results").
+async function lookupRussianForCard(card, baseDe, baseEn) {
+  if (card.srcLang === "EN") return baseEn ? topRu(await lookupRussian("enru", baseEn)) : [];
+  if (card.srcLang === "DE") return baseDe ? topRu(await lookupRussian("deru", baseDe)) : [];
+  let ru = baseDe ? await lookupRussian("deru", baseDe) : [];
+  if (!ru.length && baseEn) ru = await lookupRussian("enru", baseEn);
+  return topRu(ru);
+}
+function topRu(list) { return list.slice(0, 6); }   // store a few; the card shows the top 3
 
 /* ============================================================
    Storage (swappable backend)
@@ -392,6 +495,11 @@ function newCard(de, en, examples) {
     de, en,
     examples: list,           // [{ de, en }] usage phrases (may be empty)
     examplesFetched: true,    // false only for pre-examples cards (backfilled lazily)
+    altDe: null,              // other German translations ["Riegel {m}", ...] (null = not fetched)
+    altEn: null,              // other English translations ["beam", ...] (null = not fetched)
+    ru: null,                 // Russian translations ["балка", ...] (null = not fetched)
+    srcLang: null,            // "DE"|"EN": language the card was looked up FROM (picks the RU direction)
+    extrasFetched: false,     // whether altDe/altEn/ru enrichment has completed
     ef: 2.5,
     interval: 0,
     repetitions: 0,
@@ -433,7 +541,7 @@ let current = null;        // the card object being shown
 let side = "de";           // which side is the prompt: "de" or "en"
 let revealed = false;      // has the answer been shown (=> lapse recorded)
 let currentExample = null; // example held stable across a single card viewing
-const backfilling = new Set(); // card ids currently being re-looked-up for examples
+const enriching = new Set();   // card ids currently being enriched (examples/alts/ru)
 
 function pickCurrent() {
   const q = queue();
@@ -441,8 +549,10 @@ function pickCurrent() {
   revealed = false;
   side = Math.random() < 0.5 ? "de" : "en";
   currentExample = null;   // fresh random example is chosen on next render
-  if (current) maybeBackfill(current);
+  if (current) maybeEnrich(current);
 }
+
+function live(card) { return card && state.cards.find(x => x.id === card.id); }
 
 // Choose a random usage phrase to show with the card. Skips any phrase whose
 // prompt-side is identical to the shown word, so the example always differs
@@ -469,26 +579,71 @@ function baseGerman(card) {
   return stripMarkers(card.de).replace(/^(der|die|das)\s+/i, "").trim();
 }
 
-// Older cards (created before examples existed) fetch their phrases once, the
-// first time they surface, then cache them on the card.
-async function maybeBackfill(card) {
-  if (!card || card.examplesFetched || backfilling.has(card.id)) return;
-  const baseDe = baseGerman(card);
-  const baseEn = stripMarkers(card.en);
-  const word = baseDe || baseEn;
-  if (!word) { card.examplesFetched = true; save(); return; }
-  backfilling.add(card.id);
+// Lazily fill in everything a card needs beyond its main pair — usage examples,
+// the other-translations lists (both directions), and the Russian line — the
+// first time it surfaces, then cache it all on the card. Existing cards from
+// before this feature have these fields missing and get backfilled here; new
+// cards already carry examples + the same-direction alternatives from add time,
+// so this only fetches the reverse-direction alternatives and Russian for them.
+// Each piece is best-effort: a failed lookup is left unset so it retries when
+// the card next appears. Runs silently in the background.
+async function maybeEnrich(card) {
+  if (!card) return;
+  const need = {
+    examples: !card.examplesFetched,
+    altEn: !Array.isArray(card.altEn),
+    altDe: !Array.isArray(card.altDe),
+    ru: !Array.isArray(card.ru),
+  };
+  if (!need.examples && !need.altEn && !need.altDe && !need.ru) return;
+  if (enriching.has(card.id)) return;
+  enriching.add(card.id);
+
+  const baseDe = baseGerman(card);       // "Balken"
+  const baseEn = stripMarkers(card.en);  // "bar"
+  let changed = false, exChanged = false;
+
   try {
-    const { pairs } = await backend.lookup(word);
-    const examples = deriveExamples(pairs, baseDe, baseEn);
-    const c = state.cards.find((x) => x.id === card.id);
-    if (c) { c.examples = examples; c.examplesFetched = true; save(); }
-    if (current && current.id === card.id) { currentExample = null; render(); }
-  } catch {
-    // Proxy down / lookup failed — leave unfetched so it retries when the card
-    // next appears. No toast: backfill is a silent background nicety.
+    // The German headword's page yields English alternatives + usage examples.
+    if (need.altEn || need.examples) {
+      let pairs = null;
+      if (baseDe) { try { ({ pairs } = await backend.lookup(baseDe)); } catch {} }
+      const c = live(card);
+      if (c) {
+        if (need.examples && (pairs || !baseDe)) {
+          c.examples = pairs ? deriveExamples(pairs, baseDe, baseEn) : (c.examples || []);
+          c.examplesFetched = true; changed = exChanged = true;
+        }
+        if (need.altEn && (pairs || !baseDe)) {
+          c.altEn = pairs ? altWords(pairs, baseDe, "de") : []; changed = true;
+        }
+      }
+    }
+    // The English headword's page yields German alternatives (with articles).
+    if (need.altDe) {
+      let pairs = null;
+      if (baseEn) { try { ({ pairs } = await backend.lookup(baseEn)); } catch {} }
+      const c = live(card);
+      if (c && (pairs || !baseEn)) { c.altDe = pairs ? altWords(pairs, baseEn, "en") : []; changed = true; }
+    }
+    // Russian, in the direction the card was added from.
+    if (need.ru) {
+      try {
+        const ru = await lookupRussianForCard(card, baseDe, baseEn);
+        const c = live(card);
+        if (c) { c.ru = ru; changed = true; }
+      } catch {}
+    }
+    const c = live(card);
+    if (c && c.examplesFetched && Array.isArray(c.altEn) && Array.isArray(c.altDe) && Array.isArray(c.ru)) {
+      c.extrasFetched = true;
+    }
+    if (changed) {
+      save();
+      if (current && current.id === card.id) { if (exChanged) currentExample = null; render(); }
+    }
   } finally {
-    backfilling.delete(card.id);
+    enriching.delete(card.id);
   }
 }
 
@@ -517,6 +672,23 @@ function render() {
   if (currentExample === null) currentExample = pickExample(current, side);
   const ex = currentExample;
 
+  // Extra info shown once revealed: up to 4 other translations in the ANSWER
+  // language (German ones carry their article), then the Russian line as a final
+  // bullet (top 3, comma-joined). The card's own answer word is filtered out.
+  const answerLang = side === "de" ? "en" : "de";
+  const rawAlts = (answerLang === "de" ? current.altDe : current.altEn) || [];
+  const seenAlt = new Set([answerWord.toLowerCase()]);
+  const alts = [];
+  for (const a of rawAlts) {
+    const disp = answerLang === "de" ? withArticle(a) : stripMarkers(a);
+    const key = disp.toLowerCase();
+    if (!disp || seenAlt.has(key)) continue;
+    seenAlt.add(key);
+    alts.push(disp);
+    if (alts.length === 4) break;
+  }
+  const ruLine = (current.ru || []).slice(0, 3).join(", ");
+
   main.innerHTML = `
     <div class="card" id="card">
       <div class="prompt">${esc(promptWord)}</div>
@@ -525,6 +697,10 @@ function render() {
         <div class="answer">
           <div class="word">${esc(answerWord)}</div>
           ${ex ? `<div class="example-answer">${esc(ex.answer)}</div>` : ``}
+          ${(alts.length || ruLine) ? `<ul class="alts">
+            ${alts.map(a => `<li>${esc(a)}</li>`).join("")}
+            ${ruLine ? `<li class="ru">${esc(ruLine)}</li>` : ``}
+          </ul>` : ``}
         </div>
       ` : ``}
     </div>
@@ -581,20 +757,22 @@ async function runAdd(word) {
   setAdding(true);
   try {
     const { pairs, suggestions } = await backend.lookup(word);
-    const clean = pairs
-      .map(p => ({ de: (p.de || "").trim(), en: (p.en || "").trim() }))
-      .filter(p => p.de && p.en);
+    const rows = buildTranslationRows(pairs, word);
 
-    const best = clean.length ? bestPair(clean, word) : null;
-
-    if (best && best.score >= 3) {          // confident exact-word match
-      commitCard(best.pair, pairs);
-    } else if (suggestions.length) {        // misspelled? let the user choose
+    if (rows.length > 1) {                   // multiple senses — let the user pick the default
+      showTranslations(word, rows, pairs);
+    } else if (rows.length === 1) {          // a single 1:1 sense — just save it
+      commitCard(rows[0], pairs, rows[0].srcLang);
+    } else if (suggestions.length) {         // misspelled? offer similar terms
       showChooser(word, suggestions);
-    } else if (best) {                      // translations but no exact match
-      commitCard(best.pair, pairs);
     } else {
-      toast(`No translation or suggestions for “${word}”.`, "err");
+      // No exact 1:1 match; fall back to dict.cc's best-ranked pair, if any.
+      const clean = pairs
+        .map(p => ({ de: (p.de || "").trim(), en: (p.en || "").trim() }))
+        .filter(p => p.de && p.en);
+      const best = clean.length ? bestPair(clean, word) : null;
+      if (best) commitCard(best.pair, pairs, inferSrcLang(best.pair, word));
+      else toast(`No translation or suggestions for “${word}”.`, "err");
     }
   } catch (err) {
     toast(`Lookup failed: ${err.message}. Is the proxy running?`, "err");
@@ -610,26 +788,49 @@ function setAdding(on) {
 
 // Store a chosen pair as a card. German side always carries its article.
 // `allPairs` is the full lookup result, from which we mine usage phrases.
-function commitCard(pair, allPairs) {
+function commitCard(pair, allPairs, srcLang) {
   const de = withArticle(pair.de);
   const en = stripMarkers(pair.en);
-  const examples = deriveExamples(allPairs || [pair], stripMarkers(pair.de), en);
+  const pairs = allPairs || [pair];
+  const examples = deriveExamples(pairs, stripMarkers(pair.de), en);
+  // The lookup we already did was for the SOURCE word, so `pairs` contains that
+  // word's translations into the OTHER language — collect them for free here.
+  // The reverse-direction alternatives + Russian are fetched later by enrich().
+  const altDe = srcLang === "EN" ? altWords(pairs, en, "en") : null;
+  const altEn = srcLang === "DE" ? altWords(pairs, stripMarkers(pair.de), "de") : null;
   const id = cardId(de, en);
   const existing = state.cards.find(c => c.id === id);
   if (existing) {
     if (!existing.examplesFetched || !(existing.examples || []).length) {
       existing.examples = examples;       // top up an older/empty card
       existing.examplesFetched = true;
-      save();
     }
+    if (srcLang && !existing.srcLang) existing.srcLang = srcLang;
+    if (altDe && !Array.isArray(existing.altDe)) existing.altDe = altDe;
+    if (altEn && !Array.isArray(existing.altEn)) existing.altEn = altEn;
+    save();
     toast(`Already have “${de}”.`);
   } else {
-    state.cards.push(newCard(de, en, examples));
+    const card = newCard(de, en, examples);
+    card.srcLang = srcLang || null;
+    if (altDe) card.altDe = altDe;
+    if (altEn) card.altEn = altEn;
+    state.cards.push(card);
     save();
     toast(`Added “${de} — ${en}”.`, "ok");
   }
   pickCurrent();   // show a card right away (per spec)
   render();
+}
+
+// Which language the typed word came from, for the fallback path where the
+// chooser didn't record it. Matches the typed word against each side of the
+// chosen pair; null when neither matches (enrich() then tries both RU directions).
+function inferSrcLang(pair, word) {
+  const q = matchKey(word);
+  if (matchKey(pair.en) === q) return "EN";
+  if (matchKey(pair.de) === q) return "DE";
+  return null;
 }
 
 // Remove {gender}/{pos} annotations and [notes] from a side.
@@ -678,6 +879,105 @@ function sideScore(side, target) {
   const words = base.split(/\s+/);
   if (words.includes(target)) return 0.5;         // appears as a token
   return 0;
+}
+
+/* ============================================================
+   Translation chooser — pick which sense becomes the card
+   ============================================================ */
+
+// Build the list of 1:1 single-word translation options for `word`.
+// A row qualifies when one side of a lookup pair is EXACTLY the typed word
+// (ignoring {gender}/{pos} markers, [notes], and a trailing hyphen like the
+// adjective form "Leber-"), and the other side is a single word. The matching
+// side is the "source"; we record its language so the chooser can label rows
+// when the same spelling exists in both languages (German "bar" → cash vs
+// English "bar" → Balken). Multi-word phrases like "Leber-Linie" are excluded
+// because the headword no longer matches 1:1.
+function buildTranslationRows(pairs, word) {
+  const q = matchKey(word);
+  const byKey = new Map();
+  for (const p of pairs) {
+    const en = (p.en || "").trim();
+    let de = (p.de || "").trim();
+    if (!de || !en) continue;
+    // Prefer treating the English side as the source when both sides match
+    // (homographs like en "bar" = de "Bar"), so the translation is the more
+    // useful German word rather than an echo of the same spelling.
+    let srcLang = null;
+    if (matchKey(en) === q && isSingleWord(de)) srcLang = "EN";
+    else if (matchKey(de) === q && isSingleWord(en)) srcLang = "DE";
+    else continue;
+    if (srcLang === "DE") de = deHyphen(de);   // combining form "Leber-" -> "Leber"
+    const trans = stripMarkers(srcLang === "DE" ? en : de).toLowerCase();
+    const key = srcLang + "|" + trans;         // dedupe repeated senses/homographs
+    const rank = srcLang === "DE" ? deRank(de) : 1;
+    const prev = byKey.get(key);
+    // On a duplicate, keep the variant with the cleaner headword — a gendered
+    // noun ("Leber {f}") beats the article-less combining form — so the saved
+    // card gets its article.
+    if (!prev || rank > prev._rank) byKey.set(key, { de, en, srcLang, _rank: rank });
+  }
+  return [...byKey.values()].map(({ de, en, srcLang }) => ({ de, en, srcLang }));
+}
+
+// Normalized key for exact-word matching: drop {markers}/[notes], a trailing
+// hyphen (dict.cc's combining form "Leber-"), and case.
+function matchKey(s) {
+  return stripMarkers(s).toLowerCase().replace(/-+$/, "").trim();
+}
+
+// A translation side is a single word: exactly one token, and not a bare
+// prefix/suffix form ("-bar", "Leber-"). Internal hyphens ("T-Shirt") are kept.
+function isSingleWord(s) {
+  const c = stripMarkers(s);
+  return /^\S+$/.test(c) && !/^-|-$/.test(c);
+}
+
+// Strip a trailing hyphen from a German headword, keeping any {gender} marker.
+function deHyphen(s) {
+  return s.replace(/-+(\s*\{[^}]*\})?\s*$/, "$1").trim();
+}
+
+// Rank a German source cell so dedupe prefers the standalone noun (gendered,
+// gets an article) over the article-less combining form.
+function deRank(de) {
+  if (/\{\s*(m|f|n|pl)/i.test(de)) return 2;
+  return /-\s*$/.test(stripMarkers(de)) ? 0 : 1;
+}
+
+// Popup: a scrollable table of candidate translations. Left column is the typed
+// word (with a DE/EN badge when it exists in both languages); right column is
+// each single-word translation. Tapping a row saves it as the card.
+function showTranslations(word, rows, allPairs) {
+  const mixed = rows.some(r => r.srcLang === "DE") && rows.some(r => r.srcLang === "EN");
+  const el = document.getElementById("chooser");
+  const body = rows.map((r, i) => {
+    const src = esc(stripMarkers(r.srcLang === "DE" ? r.de : r.en));
+    const tr  = esc(r.srcLang === "DE" ? stripMarkers(r.en) : withArticle(r.de));
+    const badge = mixed ? `<span class="lang-badge">${r.srcLang}</span>` : "";
+    return `<tr class="pick" data-i="${i}">
+        <td class="src">${badge}${src}</td>
+        <td class="arrow">→</td>
+        <td class="trg">${tr}</td>
+      </tr>`;
+  }).join("");
+  el.innerHTML = `
+    <div class="sheet" role="dialog" aria-modal="true">
+      <div class="sheet-title">Choose a translation</div>
+      <div class="sheet-sub">Pick the sense to save as your card for “${esc(word)}”.</div>
+      <div class="tt-wrap"><table class="tt"><tbody>${body}</tbody></table></div>
+      <button class="btn ghost" id="chooserCancel">Cancel</button>
+    </div>`;
+  el.hidden = false;
+  el.querySelectorAll(".pick").forEach(row =>
+    row.addEventListener("click", () => {
+      const r = rows[+row.dataset.i];
+      hideChooser();
+      commitCard({ de: r.de, en: r.en }, allPairs, r.srcLang);
+    })
+  );
+  document.getElementById("chooserCancel").addEventListener("click", hideChooser);
+  el.addEventListener("click", e => { if (e.target === el) hideChooser(); });
 }
 
 /* ============================================================
